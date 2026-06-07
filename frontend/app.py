@@ -35,30 +35,37 @@ with st.sidebar:
         height=150,
         placeholder=(
             "例如：\n"
-            "• 分析 2026 年 AI Agent 的发展趋势，写一篇深度文章\n"
             "• 写一首关于秋天的五言诗\n"
-            "• 设计一个面向大学生的笔记 App"
+            "• 分析 AI Agent 发展趋势\n"
+            "• 设计一个学生笔记 App"
         ),
         key="task_input",
     )
 
-    if st.button("🚀 开始执行", type="primary", use_container_width=True):
-        # 提交任务到后端
-        try:
-            resp = requests.post(
-                f"{BACKEND_URL}/task",
-                json={"task": task},
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                st.session_state.task_id = resp.json()["task_id"]
-                st.session_state.task_text = task
-                st.session_state.polling = True
-                st.session_state.seen_event_count = 0
-            else:
-                st.error(f"后端错误: {resp.status_code}")
-        except requests.ConnectionError:
-            st.error("❌ 后端未启动")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🚀 开始执行", type="primary", use_container_width=True):
+            try:
+                resp = requests.post(
+                    f"{BACKEND_URL}/task",
+                    json={"task": task},
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    st.session_state.task_id = resp.json()["task_id"]
+                    st.session_state.task_text = task
+                    st.session_state.polling = True
+                    st.session_state.agent_outputs = {}
+                    st.session_state.last_event_count = 0
+                    st.rerun()
+                else:
+                    st.error(f"后端错误: {resp.status_code}")
+            except requests.ConnectionError:
+                st.error("❌ 后端未启动")
+    with col2:
+        if st.button("🛑 停止", use_container_width=True):
+            st.session_state.polling = False
+            st.rerun()
 
     st.divider()
 
@@ -71,129 +78,100 @@ with st.sidebar:
             if not history:
                 st.caption("暂无历史记录")
             for item in history:
-                preview = item["task"][:35] + ("..." if len(item["task"]) > 35 else "")
+                preview = item["task"][:30] + ("..." if len(item["task"]) > 30 else "")
                 with st.expander(f"{preview} — {item['created_at'][:10]}"):
                     st.write(item["task"])
-                    if st.button("🔁 重新执行", key=f"rerun_{item['id']}"):
+                    if st.button("🔁 重试", key=f"rerun_{item['id']}"):
                         st.session_state.task_input = item["task"]
                         st.rerun()
     except requests.ConnectionError:
         st.caption("⚠️ 后端未启动")
 
 # ═══════════════════════════════════════
-# 主区域：轮询显示 Agent 工作过程
+# 主区域：每次 rerun 只查一次 API
 # ═══════════════════════════════════════
 if st.session_state.get("polling"):
     task_id = st.session_state["task_id"]
-    task_text = st.session_state["task_text"]
-    seen_count = st.session_state.get("seen_event_count", 0)
 
-    # 占位区
-    status_placeholder = st.empty()
-    plan_placeholder = st.empty()
-    workers_placeholder = st.empty()
-    critic_placeholder = st.empty()
-    final_placeholder = st.empty()
+    # 查一次状态
+    try:
+        resp = requests.get(f"{BACKEND_URL}/task/{task_id}/status", timeout=5)
+        if resp.status_code != 200:
+            st.warning("等待后端响应...")
+            time.sleep(1)
+            st.rerun()
 
-    max_polls = 120  # 最多等 2 分钟
-    agent_displays = {}  # {node: accumulated text}
+        data = resp.json()
+        status = data.get("status", "running")
+        events = data.get("events", [])
 
-    for _ in range(max_polls):
-        try:
-            resp = requests.get(
-                f"{BACKEND_URL}/task/{task_id}/status",
-                timeout=5,
-            )
-            if resp.status_code != 200:
-                time.sleep(1)
-                continue
+        # 累积展示文本
+        if "agent_outputs" not in st.session_state:
+            st.session_state.agent_outputs = {}
 
-            data = resp.json()
-            events = data.get("events", [])
-            new_events = events[seen_count:]
-            seen_count = len(events)
-            st.session_state["seen_event_count"] = seen_count
+        for evt in events:
+            node = evt.get("node", "system")
+            etype = evt.get("event", "")
+            content = evt.get("content", "")
 
-            # 处理新事件
-            for evt in new_events:
-                node = evt.get("node", "system")
-                etype = evt.get("event", "")
-                content = evt.get("content", "")
+            if node not in st.session_state.agent_outputs:
+                st.session_state.agent_outputs[node] = ""
 
-                if node not in agent_displays:
-                    agent_displays[node] = ""
+            if etype == "agent_start":
+                st.session_state.agent_outputs[node] += f"⏳ {content}\n\n"
+            elif etype == "agent_done":
+                st.session_state.agent_outputs[node] += f"\n\n✅ {content}"
+            elif etype == "agent_output":
+                st.session_state.agent_outputs[node] += content
 
-                if etype == "agent_start":
-                    agent_displays[node] += f"⏳ {content}\n\n"
-                elif etype == "agent_done":
-                    agent_displays[node] += f"\n\n✅ {content}"
-                elif etype == "agent_output":
-                    agent_displays[node] += content
+        outputs = st.session_state.agent_outputs
 
-            # 渲染
-            # Planner
-            if "planner" in agent_displays:
-                with plan_placeholder.expander("🧠 Planner", expanded=True):
-                    st.markdown(agent_displays["planner"])
-            elif new_events:
-                status_placeholder.info("⏳ 等待 Planner 制定计划...")
+        # ── 渲染 ──
+        # Planner
+        if "planner" in outputs:
+            with st.expander("🧠 Planner", expanded=True):
+                st.markdown(outputs["planner"])
 
-            # Workers (researcher, synthesizer, writer, designer, analyst)
-            worker_roles = ["researcher", "synthesizer", "writer", "designer", "analyst"]
-            active_workers = [r for r in worker_roles if r in agent_displays]
-            if active_workers:
-                # 每次重新渲染（确保 expander 更新）
-                workers_placeholder.empty()
-                for role in active_workers:
-                    icon = ROLE_ICONS.get(role, "🔹")
-                    with workers_placeholder.expander(f"{icon} {role.title()}", expanded=True):
-                        st.markdown(agent_displays[role])
+        # Workers
+        for role in ["researcher", "synthesizer", "writer", "designer", "analyst"]:
+            if role in outputs:
+                icon = ROLE_ICONS.get(role, "🔹")
+                with st.expander(f"{icon} {role.title()}", expanded=True):
+                    st.markdown(outputs[role])
 
-            # Critic
-            if "critic" in agent_displays:
-                with critic_placeholder.expander("👁️ Critic", expanded=True):
-                    st.markdown(agent_displays["critic"])
+        # Critic
+        if "critic" in outputs:
+            with st.expander("👁️ Critic", expanded=True):
+                st.markdown(outputs["critic"])
 
-            # Reviser
-            if "reviser" in agent_displays:
-                with critic_placeholder.expander("🔧 Reviser", expanded=True):
-                    st.markdown(agent_displays["reviser"])
+        # Reviser
+        if "reviser" in outputs:
+            with st.expander("🔧 Reviser", expanded=True):
+                st.markdown(outputs["reviser"])
 
-            # Final
-            if new_events:
-                status_placeholder.info(
-                    f"⏳ Agent 团队工作中...（{seen_count} 步事件）"
+        # 状态和结果
+        if status == "done":
+            final = data.get("final_output", "")
+            st.session_state.polling = False
+            if final:
+                st.markdown("---")
+                st.subheader("📦 最终产出")
+                st.markdown(final)
+                st.download_button(
+                    "💾 下载 Markdown",
+                    final,
+                    "mentex-output.md",
                 )
+            st.success(f"✅ 任务完成！共产生 {len(events)} 个事件")
+        elif status == "error":
+            st.session_state.polling = False
+            st.error(f"❌ 执行出错: {data.get('error', '')}")
+        else:
+            # 还在跑，1 秒后自动刷新
+            st.info(f"⏳ Agent 团队工作中...（{len(events)} 步事件）")
+            time.sleep(1)
+            st.rerun()
 
-            # 检查是否完成
-            if data.get("status") == "done":
-                final = data.get("final_output", "")
-                if final:
-                    final_placeholder.markdown("---")
-                    final_placeholder.subheader("📦 最终产出")
-                    final_placeholder.markdown(final)
-                    col1, col2 = final_placeholder.columns(2)
-                    with col1:
-                        st.download_button(
-                            "💾 下载 Markdown",
-                            final,
-                            "mentex-output.md",
-                            use_container_width=True,
-                        )
-                status_placeholder.success("✅ 任务完成！")
-                st.session_state["polling"] = False
-                break
-            elif data.get("status") == "error":
-                status_placeholder.error(f"❌ 执行出错: {data.get('error', '')}")
-                st.session_state["polling"] = False
-                break
-
-            time.sleep(1)  # 每秒轮询
-
-        except requests.ConnectionError:
-            status_placeholder.error("❌ 后端连接中断")
-            st.session_state["polling"] = False
-            break
-    else:
-        status_placeholder.warning("⏰ 任务超时（2 分钟）")
-        st.session_state["polling"] = False
+    except requests.ConnectionError:
+        st.error("❌ 后端连接中断")
+        st.session_state.polling = False
