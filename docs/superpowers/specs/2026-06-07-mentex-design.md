@@ -1,6 +1,6 @@
 # Mentex — 多 Agent 创意工作室 · 设计规格
 
-> 最后更新：2026-06-07
+> 最后更新：2026-06-08（反映 Phase 1 实际实现）
 
 ## 1. 产品定义
 
@@ -16,9 +16,9 @@ Mentex 是一个多 Agent 协作的创意工作室。用户给一个任意任务
 
 1. 用户在 Web UI 输入：*"分析 2026 年 AI Agent 的发展趋势，写一篇深度文章"*
 2. Planner 判断 → 需要 2 个 Researcher 并行检索 + Synthesizer 融合 + Writer 撰写 + Critic 审查
-3. 用户在右侧执行区实时看到每个 Agent 的工作过程（流式文字 + 结构化数据）
-4. Critic 打完分后，如果低于 7 分自动触发 Reviser 修改
-5. 最终产出展示在底部，用户可复制/保存
+3. 用户在右侧执行区实时看到每个 Agent 的工作过程（逐角色出现，0.5s 刷新）
+4. Critic 打完分后，如果低于 7 分自动触发 Reviser 修改（最多 2 轮）
+5. 最终产出展示在底部，用户可下载 Markdown
 6. 左侧历史栏可回顾之前的所有任务
 
 ---
@@ -41,24 +41,20 @@ Mentex 是一个多 Agent 协作的创意工作室。用户给一个任意任务
 ### 3.2 Planner 决策规则
 
 ```
-简单任务（"写一首诗"）→ Writer → Critic（2 个角色）
-复杂分析（"AI 行业趋势"）→ Researcher×2 → Synthesizer → Writer → Critic
-创意创作（"设计产品"）→ Researcher → Designer → Writer → Critic
-争议话题（"核能利弊"）→ Researcher×2（正反方）→ Synthesizer → Writer → Critic
+简单任务（"写一首诗"）→ [Writer] → Critic（2 个角色）
+复杂分析（"AI 行业趋势"）→ [Researcher, Researcher, Synthesizer, Writer] → Critic
+创意创作（"设计产品"）→ [Researcher, Designer, Writer] → Critic
+争议话题（"核能利弊"）→ [Researcher×2（正反方）, Synthesizer, Writer] → Critic
 ```
 
 ### 3.3 执行流（LangGraph 状态图）
 
 ```
-START → Planner → Worker Router → [并行 Workers] → Synthesizer
-                                          ↓
-                                Writer / Analyst / Designer
-                                          ↓
-                                      Critic
-                                      ↓    ↓
-                                    pass  revise
-                                      ↓    ↓
-                                   FINAL  Reviser → Critic（最多 2 轮）
+START → Planner → Worker（循环 pipeline）→ Critic
+                                              ↓       ↓
+                                            pass    revise
+                                              ↓       ↓
+                                            END    Reviser → Critic（最多 2 轮）
 ```
 
 ### 3.4 LangGraph State
@@ -66,28 +62,26 @@ START → Planner → Worker Router → [并行 Workers] → Synthesizer
 ```python
 class StudioState(TypedDict):
     task: str                    # 用户原始任务
-    messages: list               # 对话历史
-    plan: dict                   # Planner 的执行计划
-    worker_outputs: dict         # {角色名_instance: 产出}
-    synthesis: str               # Synthesizer 融合结果
+    messages: Annotated[list, add_messages]  # 对话历史
+    plan: dict                   # Planner 的执行计划 {task_type, pipeline, roles, ...}
+    worker_outputs: dict         # {角色名: 产出文本}
     draft: str                   # 当前草稿
-    critique: dict               # Critic 审查结果
+    critique: dict               # Critic 审查结果 {score, verdict, suggestions, ...}
     final_output: str            # 最终产出
-    iteration: int               # Critic-Reviser 循环次数
+    iteration: int               # Critic-Reviser 循环计数
+    pipeline_index: int          # 当前 pipeline 执行位置
+    events: list[dict]           # 事件流 [{event, timestamp, node, content}, ...]
 ```
 
 ### 3.5 Critic-Reviser 质量循环
 
 ```
 Writer 产出 → Critic 审查
-                ├── score >= 7 AND verdict = "pass" → FINAL
-                └── score < 7 OR verdict = "revise" → Reviser
-                                                        ↓
-                                                    Critic 再审查
-                                                        ├── pass → FINAL
-                                                        └── revise AND iteration < 2
-                                                              ↓
-                                                          Reviser → Critic → FINAL
+                ├── score >= 7 AND verdict = "pass" → final_output = draft → END
+                └── score < 7 OR verdict = "revise" → Reviser → Critic
+                                                            ├── pass → END
+                                                            └── revise AND iteration < 2
+                                                                  → Reviser → Critic → 强制 END
 ```
 
 ---
@@ -98,7 +92,7 @@ Writer 产出 → Critic 审查
 
 | 维度 | 选型理由 |
 |------|----------|
-| 实时渲染 | `st.write_stream` 原生支持 |
+| 实时更新 | 增量轮询 + `st.rerun()` 每 0.5s 刷新 |
 | 开发速度 | Python only，无需前端上下文切换 |
 | 组件 | expander 天然适合展示 Agent 过程 |
 
@@ -106,69 +100,86 @@ Writer 产出 → Critic 审查
 
 ```
 ┌──────────────────────────────────────────────┐
-│  🧠 Mentex — 多 Agent 创意工作室            │
+│  🧠 Mentex — 多 Agent 创意工作室               │
 ├────────────────┬─────────────────────────────┤
 │  侧边栏（输入）  │  主区域（执行）               │
 │                │                             │
 │  任务描述框     │  🧠 Planner（expander）       │
-│  [执行] 按钮    │  🔍 Researcher-A/B（expander）│
-│  ─────────     │  🔗 Synthesizer（expander）  │
-│  历史任务列表   │  ✍️ Writer（expander）       │
-│                │  👁️ Critic（expander）       │
-│                │  🔧 Reviser（expander）      │
+│  [执行] [停止]  │  🔍 Researcher（expander）    │
+│  ─────────     │  ✍️ Writer（expander）        │
+│  历史任务列表   │  👁️ Critic（expander）        │
 │                │  ─────────────              │
 │                │  最终产出（markdown 渲染）     │
-│                │  [复制] [保存]                │
+│                │  [下载 Markdown]              │
 └────────────────┴─────────────────────────────┘
 ```
 
 ---
 
-## 5. 数据流
+## 5. 数据流（实际实现）
+
+### 5.1 流式执行架构
 
 ```
-用户输入（Streamlit）
-  → POST /task（FastAPI）
-    → LangGraph Agent 执行
-      → 每个节点 yield SSE event
-        → Streamlit 消费 SSE → 渲染到对应 expander
-          → 最终产出存储 SQLite
+用户提交任务（Streamlit）
+    │
+    ▼
+POST /task → 返回 task_id → 后台线程启动 graph.stream()
+    │                              │
+    │                              ├── Planner 完成 → 2 个事件写入共享 dict
+    │                              ├── Worker 完成  → 2 个事件写入共享 dict
+    │                              └── Critic 完成  → 2 个事件写入共享 dict
+    │
+    ▼
+前端: GET /task/{id}/events?after=N（每 0.5s，只取新增事件）
+    │
+    └── 新事件渲染到 expander → st.rerun() → 再次轮询
 ```
 
-### 5.1 SSE 事件格式
+> **设计决策**：SSE 会阻塞 Streamlit 的单线程渲染循环。改用增量轮询后，每次 `st.rerun()` 只做一次 HTTP 请求，渲染完立即返回控制权给 Streamlit。
+
+### 5.2 关键实现细节
+
+- **LangGraph 流式**：`graph.stream(stream_mode="values")` 每完成一个节点 yield 一次完整 state
+- **增量事件**：`list(chunk.get("events", []))` **必须 copy**（LangGraph 复用 list 引用，直接赋值会导致 delta 永远为空）
+- **增量返回**：`GET /task/{id}/events?after=N` 返回 `events[N:]` + `total` + `status`
+- **状态存储**：`_running_tasks[task_id]` 内存 dict，完成后写入 SQLite
+
+### 5.3 事件格式
 
 ```json
 {
-  "event": "agent_start | agent_output | agent_done | final",
-  "timestamp": "iso",
-  "node": "planner | researcher | synthesizer | writer | critic | reviser | ...",
-  "instance": "A",
-  "content": "流式文本或结构化 JSON"
+  "event": "agent_start | agent_done | final",
+  "timestamp": "2026-06-07T15:30:00+00:00",
+  "node": "planner | researcher | writer | critic | reviser",
+  "instance": "",
+  "content": "人类可读的状态文本"
 }
 ```
 
-### 5.2 API 端点
+### 5.4 API 端点
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/task` | 提交任务，返回 SSE 事件流 |
+| POST | `/task` | 提交任务，返回 `{"task_id": "xxx"}`，后台执行 |
+| GET | `/task/{id}/events?after=N` | 增量事件：`{"status", "events[N:]", "total", "final_output"}` |
+| GET | `/task/{id}` | 任务完整详情（含所有事件和产出） |
 | GET | `/history` | 历史任务列表 |
-| GET | `/task/{id}` | 任务详情回放 |
 
 ---
 
 ## 6. 技术栈
 
-| 层 | 选型 | 版本 |
+| 层 | 选型 | 说明 |
 |----|------|------|
-| Agent 编排 | LangGraph | latest |
-| LLM | DeepSeek API（deepseek-v4-flash） | - |
-| Web 框架 | FastAPI | latest |
-| 前端 | Streamlit | latest |
-| 流式协议 | SSE (Server-Sent Events) | - |
-| 存储 | SQLite | - |
+| Agent 编排 | LangGraph | `stream(stream_mode="values")` 逐节点流式执行 |
+| LLM | Agnes AI（默认）/ DeepSeek（备用） | `.env` 中 `LLM_PROVIDER` 一键切换 |
+| Web 框架 | FastAPI | 后台线程 + 内存共享 dict |
+| 前端 | Streamlit | 增量轮询 + `st.rerun()` |
+| 流式方案 | 增量轮询（非 SSE） | Streamlit 单线程模型下更稳定 |
+| 存储 | SQLite | 任务历史持久化 |
 | Python | 3.10+ | - |
-| 包管理 | pip + venv | - |
+| 包管理 | pip + venv | 共享 workspace venv |
 
 ---
 
@@ -177,21 +188,30 @@ Writer 产出 → Critic 审查
 ```
 Mentex/
 ├── backend/
-│   ├── api.py              # FastAPI + SSE 端点
-│   ├── agent/
-│   │   ├── graph.py         # LangGraph StateGraph
-│   │   ├── nodes.py         # 所有节点实现
-│   │   ├── prompts.py       # 角色 System Prompt
-│   │   └── state.py         # StudioState
-│   ├── db.py                # SQLite 操作
-│   └── config.py            # 环境变量配置
+│   ├── config.py              # 双 Provider 切换（LLM_PROVIDER=agnes/deepseek）
+│   ├── llm.py                 # chat() + chat_stream()
+│   ├── api.py                 # FastAPI（后台线程 + 增量轮询端点）
+│   ├── db.py                  # SQLite 任务历史
+│   └── agent/
+│       ├── state.py           # StudioState TypedDict
+│       ├── prompts.py         # 8 个角色的 System Prompt
+│       ├── nodes.py           # planner / worker / critic / reviser
+│       └── graph.py           # LangGraph StateGraph
 ├── frontend/
-│   └── app.py               # Streamlit UI
-├── docs/
-│   └── superpowers/
-│       └── specs/
-│           └── 2026-06-07-Mentex-design.md  # 本文件
+│   └── app.py                 # Streamlit UI（增量轮询 + st.rerun()）
+├── tests/
+│   ├── test_config.py         # Provider 切换测试 (3)
+│   ├── test_nodes.py          # 节点逻辑测试 (6)
+│   ├── test_graph.py          # 端到端流程测试 (2)
+│   ├── test_db.py             # 数据库测试 (3)
+│   └── test_api.py            # API 测试 (2)
+├── docs/superpowers/
+│   ├── specs/2026-06-07-mentex-design.md   # 本文件
+│   └── plans/2026-06-07-mentex-phase1.md   # 实现计划
+├── .env.example
+├── .gitignore
 ├── requirements.txt
+├── CLAUDE.md
 └── README.md
 ```
 
@@ -199,7 +219,8 @@ Mentex/
 
 ## 8. 关键约束
 
-- **零外部依赖**：不爬网页，不调用外部 API（除 DeepSeek LLM）
-- **纯 LLM 知识**：所有"检索"来自 LLM 自身训练数据
+- **零外部数据**：不爬网页，不调用外部 API（除 LLM）
+- **纯 LLM 知识**：所有内容来自 LLM 自身训练数据
 - **单用户**：本地运行，不考虑多租户
 - **中文优先**：所有 Prompt 和 UI 用中文
+- **最多 2 轮修改**：Critic-Reviser 循环防止无限消耗 token

@@ -4,9 +4,9 @@
 
 **Goal:** 构建多 Agent 创意工作室 MVP——用户输入任务，Planner 动态组队，Agent 团队协作产出内容，通过 Streamlit Web UI 实时观看全过程。
 
-**Architecture:** FastAPI 后端托管 LangGraph Agent 并通过 SSE 推送事件，Streamlit 前端消费事件流并渲染到各 Agent 的 expander 容器。DeepSeek API 作为唯一 LLM，零外部数据依赖。
+**Architecture:** FastAPI 后端托管 LangGraph Agent，使用 `graph.stream(stream_mode="values")` 逐节点流式执行。后台线程将事件写入共享 dict，前端通过 `GET /task/{id}/events?after=N` 增量轮询（0.5s 间隔）+ `st.rerun()` 实现逐角色实时渲染。Agnes AI 作为默认 LLM，DeepSeek 作为备用，`.env` 一行切换。
 
-**Tech Stack:** Python 3.10+, LangGraph, FastAPI, Streamlit, DeepSeek API (openai SDK), SQLite
+**Tech Stack:** Python 3.10+, LangGraph, FastAPI, Streamlit, Agnes AI / DeepSeek (openai SDK), SQLite
 
 ---
 
@@ -1755,3 +1755,45 @@ README 已在 Task 1 创建，验证内容与最终结构一致。
    - [x] StudioState 各字段在 nodes.py、graph.py、api.py 中一致
    - [x] Event 格式在 nodes.py、api.py、app.py 中一致
    - [x] DB 接口在 db.py 和 api.py 中一致
+
+---
+
+## Phase 1 实施总结
+
+**完成日期**：2026-06-08  
+**实际测试数**：16 tests（3 config + 6 nodes + 2 graph + 3 db + 2 api）  
+**Git 仓库**：https://github.com/Maxrayyy/Mentex.git
+
+### 完成情况
+
+| Task | 内容 | 状态 |
+|------|------|------|
+| 1 | 项目初始化与环境配置 | ✅ 完成 |
+| 2 | Config + LLM 客户端 | ✅ 完成 |
+| 3 | State 定义 | ✅ 完成 |
+| 4 | Prompts（8 个角色） | ✅ 完成 |
+| 5 | Planner 节点 | ✅ 完成 |
+| 6 | Worker 节点 | ✅ 完成 |
+| 7 | Critic + Reviser 节点 | ✅ 完成 |
+| 8 | Graph 组装 | ✅ 完成 |
+| 9 | Database (SQLite) | ✅ 完成 |
+| 10 | FastAPI + 流式端点 | ✅ 完成 |
+| 11 | Streamlit UI | ✅ 完成 |
+| 12 | 集成验证 + 文档 | ✅ 完成 |
+
+### 与原始计划的主要差异
+
+| 项目 | 原始计划 | 实际实现 | 原因 |
+|------|----------|----------|------|
+| LLM | DeepSeek only | Agnes AI + DeepSeek 双 Provider | Agnes 免费、支持 Function Calling |
+| 流式方案 | SSE (Server-Sent Events) | 增量轮询 (GET /events?after=N) | SSE 阻塞 Streamlit 单线程渲染 |
+| 流式执行 | graph.invoke() | graph.stream(stream_mode="values") | 逐节点即时产出事件 |
+| 事件引用 | 直接赋值 | `list()` copy | LangGraph 复用 list 引用导致 delta 为空 bug |
+| Writer prompt | 允许引用标注 | 禁止 [1][2] 脚注 | agnes-2.0-flash 自动加引用 |
+
+### 踩过的坑
+
+1. **LangGraph list 引用复用**：`all_events = current` 会导致下一次迭代 `len(all_events) == len(current)`（同一对象），delta 永远为空。必须 `list()` copy。
+2. **Streamlit + SSE 死锁**：SSE 消费的 for 循环占用主线程，UI 无法渲染。改用 `st.rerun()` 每次只做一次 HTTP 请求。
+3. **Streamlit 首次设置**：需要预先创建 `~/.streamlit/credentials.toml` 跳过邮箱输入。
+4. **Agnes 模型名**：`LLM_PROVIDER=agnes` 时模型必须是 `agnes-2.0-flash`，不能传 `deepseek-v4-flash`。
