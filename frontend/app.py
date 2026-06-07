@@ -23,6 +23,12 @@ ROLE_ICONS = {
     "system":      "📦",
 }
 
+ROLE_ORDER = [
+    "planner", "researcher", "synthesizer",
+    "writer", "designer", "analyst",
+    "critic", "reviser",
+]
+
 BACKEND_URL = "http://localhost:8000"
 
 # ═══════════════════════════════════════
@@ -53,23 +59,20 @@ with st.sidebar:
                 )
                 if resp.status_code == 200:
                     st.session_state.task_id = resp.json()["task_id"]
-                    st.session_state.task_text = task
                     st.session_state.polling = True
-                    st.session_state.agent_outputs = {}
-                    st.session_state.last_event_count = 0
+                    st.session_state.agent_texts = {}
+                    st.session_state.event_count = 0
                     st.rerun()
                 else:
                     st.error(f"后端错误: {resp.status_code}")
             except requests.ConnectionError:
-                st.error("❌ 后端未启动")
+                st.error("后端未启动")
     with col2:
         if st.button("🛑 停止", use_container_width=True):
             st.session_state.polling = False
             st.rerun()
 
     st.divider()
-
-    # 历史任务
     st.subheader("📚 历史任务")
     try:
         resp = requests.get(f"{BACKEND_URL}/history", timeout=5)
@@ -85,93 +88,88 @@ with st.sidebar:
                         st.session_state.task_input = item["task"]
                         st.rerun()
     except requests.ConnectionError:
-        st.caption("⚠️ 后端未启动")
+        st.caption("后端未启动")
 
 # ═══════════════════════════════════════
-# 主区域：每次 rerun 只查一次 API
+# 主区域
 # ═══════════════════════════════════════
 if st.session_state.get("polling"):
     task_id = st.session_state["task_id"]
+    seen = st.session_state.get("event_count", 0)
 
-    # 查一次状态
+    # 查增量事件
     try:
-        resp = requests.get(f"{BACKEND_URL}/task/{task_id}/status", timeout=5)
+        resp = requests.get(
+            f"{BACKEND_URL}/task/{task_id}/events?after={seen}",
+            timeout=5,
+        )
         if resp.status_code != 200:
-            st.warning("等待后端响应...")
-            time.sleep(1)
+            time.sleep(0.5)
             st.rerun()
 
         data = resp.json()
+        new_events = data.get("events", [])
         status = data.get("status", "running")
-        events = data.get("events", [])
 
-        # 累积展示文本
-        if "agent_outputs" not in st.session_state:
-            st.session_state.agent_outputs = {}
+        # 累积文本
+        if "agent_texts" not in st.session_state:
+            st.session_state.agent_texts = {}
 
-        for evt in events:
+        for evt in new_events:
             node = evt.get("node", "system")
             etype = evt.get("event", "")
             content = evt.get("content", "")
 
-            if node not in st.session_state.agent_outputs:
-                st.session_state.agent_outputs[node] = ""
+            if node not in st.session_state.agent_texts:
+                st.session_state.agent_texts[node] = []
 
             if etype == "agent_start":
-                st.session_state.agent_outputs[node] += f"⏳ {content}\n\n"
+                st.session_state.agent_texts[node].append(f"⏳ {content}")
             elif etype == "agent_done":
-                st.session_state.agent_outputs[node] += f"\n\n✅ {content}"
-            elif etype == "agent_output":
-                st.session_state.agent_outputs[node] += content
+                st.session_state.agent_texts[node].append(f"✅ {content}")
 
-        outputs = st.session_state.agent_outputs
+        st.session_state.event_count = seen + len(new_events)
 
-        # ── 渲染 ──
-        # Planner
-        if "planner" in outputs:
-            with st.expander("🧠 Planner", expanded=True):
-                st.markdown(outputs["planner"])
+        # ── 按顺序渲染每个角色 ──
+        texts = st.session_state.agent_texts
+        any_agent_shown = False
 
-        # Workers
-        for role in ["researcher", "synthesizer", "writer", "designer", "analyst"]:
-            if role in outputs:
+        for role in ROLE_ORDER:
+            if role in texts and texts[role]:
+                any_agent_shown = True
                 icon = ROLE_ICONS.get(role, "🔹")
-                with st.expander(f"{icon} {role.title()}", expanded=True):
-                    st.markdown(outputs[role])
+                with st.expander(
+                    f"{icon} {role.title()}",
+                    expanded=(status == "running" and role == list(texts.keys())[-1])
+                ):
+                    for line in texts[role]:
+                        st.markdown(line)
 
-        # Critic
-        if "critic" in outputs:
-            with st.expander("👁️ Critic", expanded=True):
-                st.markdown(outputs["critic"])
+        if not any_agent_shown:
+            st.info("⏳ 等待 Planner 开始工作...")
+        else:
+            if status == "running":
+                st.caption(f"⏳ 已产生 {len(new_events) + seen} 个事件，继续等待...")
 
-        # Reviser
-        if "reviser" in outputs:
-            with st.expander("🔧 Reviser", expanded=True):
-                st.markdown(outputs["reviser"])
-
-        # 状态和结果
+        # 完成
         if status == "done":
-            final = data.get("final_output", "")
             st.session_state.polling = False
+            final = data.get("final_output", "")
             if final:
                 st.markdown("---")
                 st.subheader("📦 最终产出")
                 st.markdown(final)
-                st.download_button(
-                    "💾 下载 Markdown",
-                    final,
-                    "mentex-output.md",
-                )
-            st.success(f"✅ 任务完成！共产生 {len(events)} 个事件")
+                st.download_button("💾 下载 Markdown", final, "mentex-output.md")
+            st.success("✅ 任务完成！")
+
         elif status == "error":
             st.session_state.polling = False
             st.error(f"❌ 执行出错: {data.get('error', '')}")
+
         else:
-            # 还在跑，1 秒后自动刷新
-            st.info(f"⏳ Agent 团队工作中...（{len(events)} 步事件）")
-            time.sleep(1)
+            time.sleep(0.5)   # 半秒后再查
             st.rerun()
 
     except requests.ConnectionError:
-        st.error("❌ 后端连接中断")
+        st.error("后端连接中断")
         st.session_state.polling = False
