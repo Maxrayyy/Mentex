@@ -5,11 +5,12 @@ _client = None
 
 
 def get_client() -> OpenAI:
+    """获取 LLM 客户端（惰性初始化，根据 LLM_PROVIDER 自动切换）"""
     global _client
     if _client is None:
         _client = OpenAI(
-            api_key=settings.deepseek_api_key,
-            base_url=settings.deepseek_base_url,
+            api_key=settings.api_key,
+            base_url=settings.base_url,
         )
     return _client
 
@@ -23,7 +24,7 @@ def chat(
     """同步调用 LLM，返回完整文本"""
     client = get_client()
     response = client.chat.completions.create(
-        model=model or settings.deepseek_model,
+        model=model or settings.model,
         messages=messages,
         temperature=temperature,
         max_tokens=max_tokens,
@@ -40,7 +41,7 @@ def chat_stream(
     """流式调用 LLM，yield 文本片段"""
     client = get_client()
     stream = client.chat.completions.create(
-        model=model or settings.deepseek_model,
+        model=model or settings.model,
         messages=messages,
         temperature=temperature,
         max_tokens=max_tokens,
