@@ -152,3 +152,74 @@ def worker_node(state: StudioState) -> dict:
         "pipeline_index": idx + 1,
         "events": state.get("events", []),
     }
+
+
+def critic_node(state: StudioState) -> dict:
+    """Critic 节点：审查草稿质量 → 输出评分 + pass/revise 判定"""
+    _emit(state, "agent_start", "critic", "开始审查草稿...")
+
+    from backend.agent.prompts import CRITIC_PROMPT
+
+    # 1️⃣ 把草稿和原始需求填进 Critic Prompt
+    prompt = CRITIC_PROMPT.format(
+        draft=state["draft"],
+        task=state["task"],
+    )
+
+    # 2️⃣ 调 LLM，要求返回严格 JSON
+    response = chat([
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": "请审查以上草稿并输出 JSON。"},
+    ], temperature=0.2)  # 低温度，评审要稳定
+
+    critique = _parse_json_from_response(response)
+
+    # 3️⃣ 发事件：告诉前端审查结果
+    _emit(state, "agent_done", "critic",
+          f"评分: {critique['score']}/10, "
+          f"判定: {'✅ 通过' if critique['verdict'] == 'pass' else '⚠️ 需要修改'}")
+
+    result = {
+        "critique": critique,
+        "iteration": state.get("iteration", 0) + 1,
+        "events": state.get("events", []),
+    }
+
+    # 4️⃣ 通过 → 直接设 final_output；需要改 → 留给 Reviser
+    if critique["verdict"] == "pass":
+        result["final_output"] = state["draft"]
+
+    return result
+
+
+def reviser_node(state: StudioState) -> dict:
+    """Reviser 节点：根据 Critic 的建议逐条修改草稿"""
+    _emit(state, "agent_start", "reviser", "根据审稿意见修改中...")
+
+    from backend.agent.prompts import REVISER_PROMPT
+
+    critique = state["critique"]
+
+    # 1️⃣ 把原始草稿 + Critic 的所有意见填进 Reviser Prompt
+    prompt = REVISER_PROMPT.format(
+        draft=state["draft"],
+        score=critique.get("score", "?"),
+        strengths=", ".join(critique.get("strengths", [])),
+        weaknesses=", ".join(critique.get("weaknesses", [])),
+        suggestions="\n".join(
+            f"- {s}" for s in critique.get("suggestions", [])
+        ),
+    )
+
+    # 2️⃣ 调 LLM 修改
+    revised = chat([
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": "请输出修改后的完整草稿。"},
+    ])
+
+    _emit(state, "agent_done", "reviser", "修改完成")
+
+    return {
+        "draft": revised,
+        "events": state.get("events", []),
+    }

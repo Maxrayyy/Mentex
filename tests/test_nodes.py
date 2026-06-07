@@ -111,3 +111,104 @@ def test_worker_skips_critic():
 
     # Critic 不由 worker_node 处理 → 只移动 index 到下一步
     assert result["pipeline_index"] == 2
+
+
+def test_critic_passes_good_draft():
+    """Critic 审查高质量草稿 → 判定 pass → 直接设 final_output"""
+    from backend.agent.nodes import critic_node
+
+    # Mock：LLM 返回高分审查结果
+    critique_json = json.dumps({
+        "score": 8.5,
+        "strengths": ["逻辑清晰", "内容充实"],
+        "weaknesses": ["结尾略仓促"],
+        "suggestions": ["加一个总结段落"],
+        "verdict": "pass"
+    })
+
+    state: StudioState = {
+        "task": "写一篇AI文章",
+        "messages": [],
+        "plan": {"pipeline": ["Writer", "Critic"], "plan_summary": "test"},
+        "worker_outputs": {"Writer": "一篇好文章..."},
+        "draft": "一篇关于AI的好文章，逻辑清晰，内容深入...",
+        "critique": {},
+        "final_output": "",
+        "iteration": 0,
+        "pipeline_index": 1,
+        "events": [],
+    }
+
+    with patch("backend.agent.nodes.chat",
+               return_value=f"```json\n{critique_json}\n```"):
+        result = critic_node(state)
+
+    assert result["critique"]["verdict"] == "pass"
+    assert result["critique"]["score"] == 8.5
+    assert result["final_output"] == state["draft"]  # 直接通过
+
+
+def test_critic_revises_bad_draft():
+    """Critic 审查低质量草稿 → 判定 revise → 不设 final_output"""
+    from backend.agent.nodes import critic_node
+
+    critique_json = json.dumps({
+        "score": 5.0,
+        "strengths": ["选题不错"],
+        "weaknesses": ["逻辑混乱", "缺乏深度"],
+        "suggestions": ["重新组织结构", "增加具体案例"],
+        "verdict": "revise"
+    })
+
+    state: StudioState = {
+        "task": "写一篇AI文章",
+        "messages": [],
+        "plan": {"pipeline": ["Writer", "Critic"], "plan_summary": "test"},
+        "worker_outputs": {"Writer": "草率内容..."},
+        "draft": "草率的草稿，只有两句话。",
+        "critique": {},
+        "final_output": "",
+        "iteration": 0,
+        "pipeline_index": 1,
+        "events": [],
+    }
+
+    with patch("backend.agent.nodes.chat",
+               return_value=f"```json\n{critique_json}\n```"):
+        result = critic_node(state)
+
+    assert result["critique"]["verdict"] == "revise"
+    # revise 时不返回 final_output，LangGraph 合并后保持原值
+    assert "final_output" not in result
+
+
+def test_reviser_applies_feedback():
+    """Reviser 根据 Critic 建议修改草稿"""
+    from backend.agent.nodes import reviser_node
+
+    state: StudioState = {
+        "task": "写一篇AI文章",
+        "messages": [],
+        "plan": {},
+        "worker_outputs": {},
+        "draft": "原来的草稿，有缺陷。",
+        "critique": {
+            "score": 5.0,
+            "strengths": ["选题不错"],
+            "weaknesses": ["缺乏深度"],
+            "suggestions": ["增加数据支持", "加一个引言段落"],
+            "verdict": "revise"
+        },
+        "final_output": "",
+        "iteration": 1,
+        "pipeline_index": 2,
+        "events": [],
+    }
+
+    with patch("backend.agent.nodes.chat",
+               return_value="修改后的草稿，加了引言和数据。<!-- 修改：... -->"):
+        result = reviser_node(state)
+
+    # draft 被更新了
+    assert "引言" in result["draft"]
+    assert result["draft"] != state["draft"]
