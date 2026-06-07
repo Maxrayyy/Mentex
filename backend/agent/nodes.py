@@ -2,7 +2,7 @@ import json
 import re
 from datetime import datetime, timezone
 from backend.agent.state import StudioState
-from backend.agent.prompts import PLANNER_PROMPT
+from backend.agent.prompts import PLANNER_PROMPT, WORKER_BASE_PROMPT, ROLE_DESCRIPTIONS
 from backend.llm import get_client, chat
 from backend.config import settings
 
@@ -72,5 +72,83 @@ def planner_node(state: StudioState) -> dict:
         "worker_outputs": {},
         "draft": "",
         "critique": {},
+        "events": state.get("events", []),
+    }
+
+
+def _build_worker_context(state: StudioState) -> str:
+    """把之前所有 Worker 的产出拼成一段上下文，供当前 Worker 参考"""
+    if not state["worker_outputs"]:
+        return "（这是 pipeline 的第一步，没有前人的产出可以参考）"
+
+    parts = []
+    for role_name, output in state["worker_outputs"].items():
+        # 截断过长内容，避免超过 LLM 上下文窗口
+        truncated = output[:2000] + "..." if len(output) > 2000 else output
+        parts.append(f"### {role_name} 的产出：\n{truncated}")
+    return "\n\n".join(parts)
+
+
+def worker_node(state: StudioState) -> dict:
+    """通用 Worker 节点：读 pipeline 当前位置 → 以对应角色调用 LLM → 存产出 → 前进"""
+
+    pipeline = state["plan"]["pipeline"]
+    idx = state["pipeline_index"]
+    current_step = pipeline[idx]
+
+    # 1️⃣ 如果当前步骤是 Critic 或 Reviser，跳过（由专门的节点处理）
+    if current_step in ("Critic", "Reviser"):
+        return {"pipeline_index": idx + 1}
+
+    role_name = current_step
+
+    # 2️⃣ 从计划里找到这个角色的详细信息（focus 字段等）
+    role_info = next(
+        (r for r in state["plan"]["roles"] if r["name"] == role_name),
+        {"name": role_name, "focus": "完成你的专业工作"}
+    )
+
+    _emit(state, "agent_start", role_name.lower(),
+          f"开始工作：{role_info['focus']}")
+
+    # 3️⃣ 构造 Prompt：用模板填入角色描述 + 任务 + 前人产出（上下文）
+    system_prompt = WORKER_BASE_PROMPT.format(
+        role_name=role_name,
+        role_description=ROLE_DESCRIPTIONS.get(
+            role_name, ROLE_DESCRIPTIONS["Writer"]
+        ),
+        task=state["task"],
+        context=_build_worker_context(state),
+        role_focus=role_info.get("focus", "完成你的专业工作"),
+    )
+
+    # 4️⃣ 调用 LLM
+    response = chat([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "请开始你的工作，直接输出结果。"},
+    ])
+
+    # 5️⃣ 存产出
+    new_outputs = dict(state["worker_outputs"])
+    output_key = role_name
+    # 处理同名角色多次出现的情况（如两个 Researcher → Researcher_1）
+    if output_key in new_outputs:
+        i = 1
+        while f"{role_name}_{i}" in new_outputs:
+            i += 1
+        output_key = f"{role_name}_{i}"
+    new_outputs[output_key] = response
+
+    # 6️⃣ 对于产出型角色（Writer/Analyst/Designer），同时更新 draft
+    new_draft = state["draft"]
+    if role_name in ("Writer", "Analyst", "Designer"):
+        new_draft = response
+
+    _emit(state, "agent_done", role_name.lower(), "工作完成")
+
+    return {
+        "worker_outputs": new_outputs,
+        "draft": new_draft,
+        "pipeline_index": idx + 1,
         "events": state.get("events", []),
     }
