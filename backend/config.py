@@ -21,7 +21,7 @@ class Settings:
         default_factory=lambda: os.getenv("AGENS_BASE_URL", "https://apihub.agnes-ai.com/v1")
     )
     agens_model: str = field(
-        default_factory=lambda: os.getenv("AGENS_MODEL", "deepseek-v4-flash")
+        default_factory=lambda: os.getenv("AGENS_MODEL", "agnes-2.0-flash")
     )
 
     # ── DeepSeek ──
