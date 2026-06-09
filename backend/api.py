@@ -15,7 +15,12 @@ app = FastAPI(title="Mentex API")
 # CORS — 允许 React 前端跨域访问
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:8501"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8501",
+        "http://127.0.0.1:8501",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -23,11 +28,21 @@ app.add_middleware(
 
 _graph = None
 
+# 主线程 event loop 引用（用于后台线程安全推送 SSE 事件）
+_main_loop: asyncio.AbstractEventLoop | None = None
+
 # 运行中的任务 {task_id: {"events": [...], "status": "running"|"done"|"error"}}
 _running_tasks: dict = {}
 
 # SSE 队列：每个运行中的任务对应一个 asyncio.Queue
 _task_queues: dict[str, asyncio.Queue] = {}
+
+
+@app.on_event("startup")
+async def _capture_event_loop():
+    """捕获主线程 event loop，供后台线程安全推送 SSE 事件"""
+    global _main_loop
+    _main_loop = asyncio.get_running_loop()
 
 
 def get_graph():
@@ -43,15 +58,9 @@ class TaskRequest(BaseModel):
 
 def _push_event_safe(task_id: str, event: dict):
     """从后台线程安全地向 asyncio.Queue 推送事件"""
-    if task_id in _task_queues:
+    if task_id in _task_queues and _main_loop is not None:
         q = _task_queues[task_id]
-        try:
-            # 获取当前运行的事件循环（主线程）
-            loop = asyncio.get_event_loop()
-            loop.call_soon_threadsafe(q.put_nowait, event)
-        except RuntimeError:
-            # 万一事件循环不可用，跳过推送
-            pass
+        _main_loop.call_soon_threadsafe(q.put_nowait, event)
 
 
 def _run_agent(task_id: str, task_text: str):
