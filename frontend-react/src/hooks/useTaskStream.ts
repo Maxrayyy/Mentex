@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useAppContext } from '../context/AppContext';
-import { BACKEND_URL } from '../types';
+import { SSE_BASE } from '../types';
 import type { AgentEvent } from '../types';
 
 /**
@@ -25,7 +25,7 @@ export function useTaskStream() {
     disconnect();
 
     taskIdRef.current = taskId;
-    const url = `${BACKEND_URL}/task/${taskId}/stream`;
+    const url = `${SSE_BASE}/task/${taskId}/stream`;
     const es = new EventSource(url);
 
     // agent_start 事件

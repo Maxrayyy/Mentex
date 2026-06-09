@@ -89,5 +89,8 @@ export const ROLE_ORDER: AgentRole[] = [
   'critic', 'reviser',
 ];
 
-/** 后端 API 基础 URL */
+/** REST API 走 Vite 代理（同源，无 CORS） */
 export const BACKEND_URL = '/api';
+
+/** SSE 直连后端（Vite 代理会缓冲 SSE 流） */
+export const SSE_BASE = 'http://localhost:8000';

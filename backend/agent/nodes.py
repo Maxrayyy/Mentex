@@ -42,6 +42,10 @@ def _parse_json_from_response(text: str) -> dict:
 
 def planner_node(state: StudioState) -> dict:
     """Planner 节点：分析用户任务 → 输出执行计划（角色 + pipeline）"""
+    print(f"\n{'='*60}")
+    print(f"🧠 Planner 开始分析任务: {state['task'][:80]}...")
+    print(f"{'='*60}")
+
     # 1️⃣ 发事件：告诉前端 "Planner 开始了"
     _emit(state, "agent_start", "planner", "开始分析任务...")
 
@@ -52,8 +56,19 @@ def planner_node(state: StudioState) -> dict:
     ]
 
     # 3️⃣ 调用 LLM，获取计划
-    response = chat(messages, temperature=0.3)  # 低温度 = 更稳定
-    plan = _parse_json_from_response(response)
+    try:
+        response = chat(messages, temperature=0.3)  # 低温度 = 更稳定
+        plan = _parse_json_from_response(response)
+        print(f"📋 计划: {plan.get('plan_summary', '')}")
+        print(f"🔗 Pipeline: {' → '.join(plan.get('pipeline', []))}")
+    except Exception as e:
+        print(f"❌ Planner LLM 调用失败: {e}")
+        plan = {
+            "task_type": "general",
+            "plan_summary": f"LLM 调用失败，使用默认计划: {e}",
+            "roles": [{"name": "Writer", "focus": "完成用户任务"}],
+            "pipeline": ["Writer", "Critic"],
+        }
 
     # 4️⃣ 自动追加 Critic 到 pipeline 末尾（保证每次都有质量审查）
     if "Critic" not in plan.get("pipeline", []):
@@ -108,6 +123,8 @@ def worker_node(state: StudioState) -> dict:
         {"name": role_name, "focus": "完成你的专业工作"}
     )
 
+    print(f"\n🔹 {role_name} 开始工作: {role_info['focus']}")
+
     _emit(state, "agent_start", role_name.lower(),
           f"开始工作：{role_info['focus']}")
 
@@ -127,6 +144,7 @@ def worker_node(state: StudioState) -> dict:
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": "请开始你的工作，直接输出结果。"},
     ])
+    print(f"   ✅ {role_name} 产出 {len(response)} 字符")
 
     # 5️⃣ 存产出
     new_outputs = dict(state["worker_outputs"])
@@ -156,6 +174,8 @@ def worker_node(state: StudioState) -> dict:
 
 def critic_node(state: StudioState) -> dict:
     """Critic 节点：审查草稿质量 → 输出评分 + pass/revise 判定"""
+    print(f"\n👁️ Critic 开始审查草稿...")
+
     _emit(state, "agent_start", "critic", "开始审查草稿...")
 
     from backend.agent.prompts import CRITIC_PROMPT
@@ -173,6 +193,7 @@ def critic_node(state: StudioState) -> dict:
     ], temperature=0.2)  # 低温度，评审要稳定
 
     critique = _parse_json_from_response(response)
+    print(f"   📊 评分: {critique.get('score', '?')}/10 → {critique.get('verdict', '?')}")
 
     # 3️⃣ 发事件：告诉前端审查结果
     _emit(state, "agent_done", "critic",
@@ -194,6 +215,8 @@ def critic_node(state: StudioState) -> dict:
 
 def reviser_node(state: StudioState) -> dict:
     """Reviser 节点：根据 Critic 的建议逐条修改草稿"""
+    print(f"\n🔧 Reviser 开始修改草稿... (第 {state.get('iteration', 0) + 1} 轮)")
+
     _emit(state, "agent_start", "reviser", "根据审稿意见修改中...")
 
     from backend.agent.prompts import REVISER_PROMPT
@@ -216,6 +239,7 @@ def reviser_node(state: StudioState) -> dict:
         {"role": "system", "content": prompt},
         {"role": "user", "content": "请输出修改后的完整草稿。"},
     ])
+    print(f"   ✅ Reviser 产出 {len(revised)} 字符")
 
     _emit(state, "agent_done", "reviser", "修改完成")
 

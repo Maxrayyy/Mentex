@@ -11,6 +11,7 @@ def get_client() -> OpenAI:
         _client = OpenAI(
             api_key=settings.api_key,
             base_url=settings.base_url,
+            timeout=120.0,  # 2 分钟超时
         )
     return _client
 
@@ -23,13 +24,17 @@ def chat(
 ) -> str:
     """同步调用 LLM，返回完整文本"""
     client = get_client()
-    response = client.chat.completions.create(
-        model=model or settings.model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    return response.choices[0].message.content
+    try:
+        response = client.chat.completions.create(
+            model=model or settings.model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"❌ LLM 调用失败: {e}")
+        raise
 
 
 def chat_stream(
