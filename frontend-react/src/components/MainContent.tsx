@@ -4,7 +4,7 @@ import { BACKEND_URL } from '../types';
 import WelcomeScreen from './WelcomeScreen';
 import StreamingOutput from './StreamingOutput';
 import FinalResult from './FinalResult';
-import { Square, ArrowUp } from 'lucide-react';
+import { Square, ArrowUp, Coins } from 'lucide-react';
 import { useRef, type FormEvent } from 'react';
 
 export default function MainContent() {
@@ -52,6 +52,12 @@ export default function MainContent() {
         <div className="flex items-center gap-2 px-6 py-3 border-b border-mentex-border
                         bg-mentex-surface/80 backdrop-blur-sm">
           <StatusBadge status={taskStatus} />
+          {state.totalTokens > 0 && (
+            <span className="flex items-center gap-1 text-xs text-mentex-text-muted">
+              <Coins className="w-3.5 h-3.5" />
+              {state.totalTokens.toLocaleString()} tokens
+            </span>
+          )}
           {taskStatus === 'running' && state.taskText && (
             <span className="text-sm text-mentex-text-muted truncate">
               {state.taskText.slice(0, 60)}{state.taskText.length > 60 ? '...' : ''}

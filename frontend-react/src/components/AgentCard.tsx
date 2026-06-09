@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { AgentNode } from '../types';
 import { ROLE_META } from '../types';
-import { ChevronDown, Loader, Check, Circle } from 'lucide-react';
+import { ChevronDown, Loader, Check, Circle, Coins } from 'lucide-react';
 import * as Icons from 'lucide-react';
 
 interface Props {
@@ -69,6 +69,12 @@ export default function AgentCard({ node }: Props) {
           {node.status === 'running' && (
             <span className="ml-2 text-xs text-mentex-accent animate-pulse">
               工作中...
+            </span>
+          )}
+          {node.status === 'done' && node.tokens && (
+            <span className="ml-2 text-xs text-mentex-text-muted/70 flex items-center gap-0.5">
+              <Coins className="w-3 h-3" />
+              {node.tokens.total.toLocaleString()}
             </span>
           )}
         </div>

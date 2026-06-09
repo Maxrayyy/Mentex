@@ -32,5 +32,8 @@ class StudioState(TypedDict):
     # 当前 pipeline 执行位置
     pipeline_index: int
 
+    # 累计 token 用量
+    total_tokens: int
+
     # 事件流（供 SSE 消费）
     events: list[dict]

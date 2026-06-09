@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════
 
 /** Agent 事件类型 */
-export type AgentEventType = 'agent_start' | 'agent_done' | 'done' | 'error' | 'heartbeat';
+export type AgentEventType = 'agent_start' | 'agent_done' | 'done' | 'task_error' | 'heartbeat';
 
 /** 后端推送的原始事件 */
 export interface AgentEvent {
@@ -13,6 +13,7 @@ export interface AgentEvent {
   instance: string;
   content: string;
   final_output?: string;
+  tokens?: { prompt: number; completion: number; total: number };
 }
 
 /** 任务执行状态 */
@@ -45,6 +46,7 @@ export interface AgentNode {
   label: string;
   status: AgentState;
   content: string[];
+  tokens?: { prompt: number; completion: number; total: number };
 }
 
 /** 全局应用状态 */
@@ -57,6 +59,7 @@ export interface AppState {
   error: string | null;
   history: HistoryItem[];
   agentNodes: AgentNode[];
+  totalTokens: number;
 }
 
 /** 全局 Action 类型 */

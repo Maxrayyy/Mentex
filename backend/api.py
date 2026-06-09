@@ -68,6 +68,7 @@ def _run_agent(task_id: str, task_text: str):
         "final_output": "",
         "iteration": 0,
         "pipeline_index": 0,
+        "total_tokens": 0,
         "events": [],
     }
 
@@ -111,15 +112,16 @@ def _run_agent(task_id: str, task_text: str):
             "instance": "",
             "content": "任务完成",
             "final_output": final_output,
+            "total_tokens": final_state.get("total_tokens", 0),
         })
 
     except Exception as e:
         _running_tasks[task_id]["status"] = "error"
         _running_tasks[task_id]["error"] = str(e)
 
-        # 发送错误事件到 SSE 队列
+        # 发送错误事件到 SSE 队列（不要用 "error" 作为 SSE event 名，浏览器会关闭连接）
         _push_event_safe(task_id, {
-            "event": "error",
+            "event": "task_error",
             "timestamp": "",
             "node": "system",
             "instance": "",
@@ -154,9 +156,9 @@ async def _event_generator(task_id: str):
             return
         elif task["status"] == "error":
             yield {
-                "event": "error",
+                "event": "task_error",
                 "data": json.dumps({
-                    "event": "error",
+                    "event": "task_error",
                     "content": task.get("error", "未知错误"),
                 }, ensure_ascii=False),
             }
@@ -184,9 +186,9 @@ async def _event_generator(task_id: str):
                     "data": json.dumps(event, ensure_ascii=False),
                 }
                 break
-            elif event_type == "error":
+            elif event_type == "task_error":
                 yield {
-                    "event": "error",
+                    "event": "task_error",
                     "data": json.dumps(event, ensure_ascii=False),
                 }
                 break

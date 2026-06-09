@@ -1,6 +1,6 @@
 import { createContext, useContext, useReducer } from 'react';
 import type { ReactNode } from 'react';
-import type { AppState, AppAction, AgentState } from '../types';
+import type { AppState, AppAction, AgentState, AgentNode } from '../types';
 import { ROLE_ORDER } from '../types';
 
 // ═══════════════════════════════════════
@@ -20,6 +20,7 @@ const initialState: AppState = {
     status: 'pending' as const,
     content: [],
   })),
+  totalTokens: 0,
 };
 
 // ═══════════════════════════════════════
@@ -36,6 +37,7 @@ function appReducer(state: AppState, action: AppAction): AppState {
         events: [],
         finalOutput: null,
         error: null,
+        totalTokens: 0,
         agentNodes: ROLE_ORDER.map(role => ({
           role,
           label: role,
@@ -46,23 +48,30 @@ function appReducer(state: AppState, action: AppAction): AppState {
 
     case 'ADD_EVENT': {
       const event = action.event;
-      // 更新对应 agent node 的状态
+      // 更新对应 agent node 的状态和 token
       const newNodes = state.agentNodes.map(node => {
         if (node.role === event.node) {
           const newStatus: AgentState = event.event === 'agent_start' ? 'running' : 'done';
-          return {
-            ...node,
+          const updates: Partial<AgentNode> = {
             status: newStatus,
             content: [...node.content, event.content],
           };
+          // agent_done 事件可能携带 token 用量
+          if (event.tokens) {
+            updates.tokens = event.tokens;
+          }
+          return { ...node, ...updates };
         }
         return node;
       });
+
+      const delta = event.tokens?.total || 0;
 
       return {
         ...state,
         events: [...state.events, event],
         agentNodes: newNodes,
+        totalTokens: state.totalTokens + delta,
       };
     }
 

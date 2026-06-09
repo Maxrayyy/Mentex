@@ -21,8 +21,11 @@ def chat(
     model: str | None = None,
     temperature: float = 0.7,
     max_tokens: int = 4096,
-) -> str:
-    """同步调用 LLM，返回完整文本"""
+) -> tuple[str, dict]:
+    """同步调用 LLM，返回 (文本内容, token用量)
+
+    token用量格式: {"prompt": int, "completion": int, "total": int}
+    """
     client = get_client()
     try:
         response = client.chat.completions.create(
@@ -31,7 +34,13 @@ def chat(
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        return response.choices[0].message.content
+        content = response.choices[0].message.content
+        usage = {
+            "prompt": response.usage.prompt_tokens if response.usage else 0,
+            "completion": response.usage.completion_tokens if response.usage else 0,
+            "total": response.usage.total_tokens if response.usage else 0,
+        }
+        return content, usage
     except Exception as e:
         print(f"❌ LLM 调用失败: {e}")
         raise

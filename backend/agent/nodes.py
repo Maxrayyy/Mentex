@@ -12,15 +12,24 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _emit(state: StudioState, event: str, node: str, content: str, instance: str = ""):
+def _emit(state: StudioState, event: str, node: str, content: str,
+          instance: str = "", tokens: dict | None = None):
     """向事件流追加一条事件（前端用 SSE 消费）"""
-    state["events"].append({
+    evt = {
         "event": event,
         "timestamp": _now_iso(),
         "node": node,
         "instance": instance,
         "content": content,
-    })
+    }
+    if tokens:
+        evt["tokens"] = tokens
+    state["events"].append(evt)
+
+
+def _fmt_tokens(t: dict) -> str:
+    """格式化 token 用量为可读字符串"""
+    return f"[↑{t['prompt']} ↓{t['completion']} Σ{t['total']}]"
 
 
 def _parse_json_from_response(text: str) -> dict:
@@ -57,10 +66,11 @@ def planner_node(state: StudioState) -> dict:
 
     # 3️⃣ 调用 LLM，获取计划
     try:
-        response = chat(messages, temperature=0.3)  # 低温度 = 更稳定
+        response, tokens = chat(messages, temperature=0.3)
         plan = _parse_json_from_response(response)
         print(f"📋 计划: {plan.get('plan_summary', '')}")
         print(f"🔗 Pipeline: {' → '.join(plan.get('pipeline', []))}")
+        print(f"💰 Token: {_fmt_tokens(tokens)}")
     except Exception as e:
         print(f"❌ Planner LLM 调用失败: {e}")
         plan = {
@@ -69,17 +79,20 @@ def planner_node(state: StudioState) -> dict:
             "roles": [{"name": "Writer", "focus": "完成用户任务"}],
             "pipeline": ["Writer", "Critic"],
         }
+        tokens = {"prompt": 0, "completion": 0, "total": 0}
 
     # 4️⃣ 自动追加 Critic 到 pipeline 末尾（保证每次都有质量审查）
     if "Critic" not in plan.get("pipeline", []):
         plan["pipeline"].append("Critic")
 
-    # 5️⃣ 发事件：告诉前端结果
+    # 5️⃣ 发事件：告诉前端结果（含 token）
     _emit(state, "agent_done", "planner",
           f"计划制定完成：{plan.get('plan_summary', '')}，"
-          f"pipeline: {' → '.join(plan.get('pipeline', []))}")
+          f"pipeline: {' → '.join(plan.get('pipeline', []))}",
+          tokens=tokens)
 
     # 6️⃣ 返回要更新的 state 字段
+    state["total_tokens"] = state.get("total_tokens", 0) + tokens["total"]
     return {
         "plan": plan,
         "pipeline_index": 0,
@@ -87,6 +100,7 @@ def planner_node(state: StudioState) -> dict:
         "worker_outputs": {},
         "draft": "",
         "critique": {},
+        "total_tokens": state["total_tokens"],
         "events": state.get("events", []),
     }
 
@@ -140,11 +154,11 @@ def worker_node(state: StudioState) -> dict:
     )
 
     # 4️⃣ 调用 LLM
-    response = chat([
+    response, tokens = chat([
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": "请开始你的工作，直接输出结果。"},
     ])
-    print(f"   ✅ {role_name} 产出 {len(response)} 字符")
+    print(f"   ✅ {role_name} 产出 {len(response)} 字符  {_fmt_tokens(tokens)}")
 
     # 5️⃣ 存产出
     new_outputs = dict(state["worker_outputs"])
@@ -162,12 +176,14 @@ def worker_node(state: StudioState) -> dict:
     if role_name in ("Writer", "Analyst", "Designer"):
         new_draft = response
 
-    _emit(state, "agent_done", role_name.lower(), "工作完成")
+    _emit(state, "agent_done", role_name.lower(), "工作完成", tokens=tokens)
 
+    state["total_tokens"] = state.get("total_tokens", 0) + tokens["total"]
     return {
         "worker_outputs": new_outputs,
         "draft": new_draft,
         "pipeline_index": idx + 1,
+        "total_tokens": state["total_tokens"],
         "events": state.get("events", []),
     }
 
@@ -187,22 +203,25 @@ def critic_node(state: StudioState) -> dict:
     )
 
     # 2️⃣ 调 LLM，要求返回严格 JSON
-    response = chat([
+    response, tokens = chat([
         {"role": "system", "content": prompt},
         {"role": "user", "content": "请审查以上草稿并输出 JSON。"},
     ], temperature=0.2)  # 低温度，评审要稳定
 
     critique = _parse_json_from_response(response)
-    print(f"   📊 评分: {critique.get('score', '?')}/10 → {critique.get('verdict', '?')}")
+    print(f"   📊 评分: {critique.get('score', '?')}/10 → {critique.get('verdict', '?')}  {_fmt_tokens(tokens)}")
 
     # 3️⃣ 发事件：告诉前端审查结果
     _emit(state, "agent_done", "critic",
           f"评分: {critique['score']}/10, "
-          f"判定: {'✅ 通过' if critique['verdict'] == 'pass' else '⚠️ 需要修改'}")
+          f"判定: {'✅ 通过' if critique['verdict'] == 'pass' else '⚠️ 需要修改'}",
+          tokens=tokens)
 
+    state["total_tokens"] = state.get("total_tokens", 0) + tokens["total"]
     result = {
         "critique": critique,
         "iteration": state.get("iteration", 0) + 1,
+        "total_tokens": state["total_tokens"],
         "events": state.get("events", []),
     }
 
@@ -235,15 +254,17 @@ def reviser_node(state: StudioState) -> dict:
     )
 
     # 2️⃣ 调 LLM 修改
-    revised = chat([
+    revised, tokens = chat([
         {"role": "system", "content": prompt},
         {"role": "user", "content": "请输出修改后的完整草稿。"},
     ])
-    print(f"   ✅ Reviser 产出 {len(revised)} 字符")
+    print(f"   ✅ Reviser 产出 {len(revised)} 字符  {_fmt_tokens(tokens)}")
 
-    _emit(state, "agent_done", "reviser", "修改完成")
+    _emit(state, "agent_done", "reviser", "修改完成", tokens=tokens)
 
+    state["total_tokens"] = state.get("total_tokens", 0) + tokens["total"]
     return {
         "draft": revised,
+        "total_tokens": state["total_tokens"],
         "events": state.get("events", []),
     }
