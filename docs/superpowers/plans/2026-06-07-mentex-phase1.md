@@ -1848,7 +1848,9 @@ README 已在 Task 1 创建，验证内容与最终结构一致。
 ## Phase 3 稳定性修复
 
 **完成日期**：2026-06-09
-**Git 提交**：`44b4bc3` fix: CORS 127.0.0.1白名单 + asyncio event loop跨线程修复
+**Git 提交**：
+- `44b4bc3` fix: CORS 127.0.0.1白名单 + asyncio event loop跨线程修复
+- `c9cdfde` feat: Pipeline 图标化 + UI 布局优化
 
 ### 修复清单
 
@@ -1857,6 +1859,11 @@ README 已在 Task 1 创建，验证内容与最终结构一致。
 | 3.1 | CORS origin 补全（127.0.0.1 vs localhost） | ✅ 完成 |
 | 3.2 | asyncio.get_event_loop() 跨线程 RuntimeError | ✅ 完成 |
 | 3.3 | 前端 SSE Hook 重构（简化 ref、添加错误日志） | ✅ 完成 |
+| 3.4 | Pipeline 去掉角色名（仅图标 + 连接线） | ✅ 完成 |
+| 3.5 | Planner 消息 pipeline 用 emoji 图标替代文字 | ✅ 完成 |
+| 3.6 | AgentCard 紧凑布局 + token 后缀 + 防溢出 | ✅ 完成 |
+| 3.7 | FinalResult width→full 占满中间区域 | ✅ 完成 |
+| 3.8 | StreamingOutput 支持 `\n` 换行渲染 | ✅ 完成 |
 
 ### Phase 3 踩过的坑
 
