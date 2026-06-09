@@ -1797,3 +1797,48 @@ README 已在 Task 1 创建，验证内容与最终结构一致。
 2. **Streamlit + SSE 死锁**：SSE 消费的 for 循环占用主线程，UI 无法渲染。改用 `st.rerun()` 每次只做一次 HTTP 请求。
 3. **Streamlit 首次设置**：需要预先创建 `~/.streamlit/credentials.toml` 跳过邮箱输入。
 4. **Agnes 模型名**：`LLM_PROVIDER=agnes` 时模型必须是 `agnes-2.0-flash`，不能传 `deepseek-v4-flash`。
+
+---
+
+## Phase 2 实施总结
+
+**完成日期**：2026-06-09
+**Git 提交**：3 commits after Phase 1
+
+### Phase 2 任务清单
+
+| Task | 内容 | 状态 |
+|------|------|------|
+| 2.1 | 后端 SSE 端点（asyncio.Queue + sse-starlette） | ✅ 完成 |
+| 2.2 | React 项目脚手架（Vite + TS + Tailwind CSS v4） | ✅ 完成 |
+| 2.3 | 类型定义 + Context 状态管理 + useTaskStream Hook | ✅ 完成 |
+| 2.4 | 三栏布局组件（Sidebar / MainContent / WorkflowPanel） | ✅ 完成 |
+| 2.5 | AgentCard + PipelineVisualization | ✅ 完成 |
+| 2.6 | 轮询 → SSE（EventSource 直连后端） | ✅ 完成 |
+| 2.7 | 白色主题 + Fira Code/Sans 字体 + Lucide 图标 | ✅ 完成 |
+| 2.8 | 输入框移到中间底部 | ✅ 完成 |
+| 2.9 | Token 调用量显示（后台日志 + 前端 UI） | ✅ 完成 |
+| 2.10 | SSE 稳定性修复（event: error → task_error） | ✅ 完成 |
+| 2.11 | LLM 客户端超时 + Agent 执行日志 | ✅ 完成 |
+| 2.12 | CORS + Vite 代理（REST 走代理、SSE 直连） | ✅ 完成 |
+
+### 与 Phase 1 的主要差异
+
+| 项目 | Phase 1 | Phase 2 | 原因 |
+|------|---------|---------|------|
+| 前端 | Streamlit | React (Vite + TS) | SSE 消费、三栏布局、精细样式 |
+| 流式方案 | 增量轮询 (0.5s) | SSE EventSource | 真正实时推送 |
+| 事件传输 | HTTP GET /events?after=N | GET /stream (SSE) | 服务器主动推送 |
+| UI 布局 | 单栏 expander | 三栏（历史\|内容\|工作流） | 更好的信息架构 |
+| 主题 | Streamlit 默认 | 浅色主题 + Fira 字体 | 专业设计系统 |
+| 图标 | Emoji | Lucide React SVG | UI/UX 规范 |
+| Token 追踪 | 无 | 后端日志 + 前端面板 | 成本可见性 |
+| LLM 调用 | 无超时 | 120s 超时 | 防止无限挂起 |
+
+### Phase 2 踩过的坑
+
+1. **Vite 代理缓冲 SSE**：Vite 的 http-proxy 会缓冲 SSE 流。解决方案：REST 走 `/api` 代理，SSE 直连 `localhost:8000`（需配置 CORS）。
+2. **SSE event: error 坑**：浏览器将 `event: error` 当作传输错误关闭 EventSource。改用 `event: task_error`。
+3. **EventSource error handler 混淆**：`addEventListener('error')` 同时捕获传输错误和自定义 SSE error 事件。改用 `es.onerror` 只处理传输层错误。
+4. **asyncio.Queue 线程安全**：后台线程通过 `loop.call_soon_threadsafe(q.put_nowait)` 推送事件到主线程的 asyncio.Queue。
+5. **LangGraph State 追加字段**：新增 `total_tokens` 字段后需在所有返回 dict 的节点中传递，否则 LangGraph 不会自动保留。

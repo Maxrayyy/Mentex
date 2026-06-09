@@ -11,7 +11,7 @@
 
 - 名称: Mentex — 多 Agent 创意工作室
 - 目标: 学习 LangGraph + 多 Agent 协作，构建可实时观看 Agent 团队协作过程的创意工作室
-- 技术栈: LangGraph, FastAPI, Streamlit, Agnes AI / DeepSeek, SQLite
+- 技术栈: LangGraph, FastAPI, React (Vite + TypeScript + Tailwind CSS v4), Agnes AI / DeepSeek, SQLite
 
 ## 开发流程: SDD (Specification-Driven Development)
 
@@ -44,9 +44,17 @@ docs/superpowers/
   - [x] Task 7: Critic + Reviser 节点
   - [x] Task 8: Graph 组装
   - [x] Task 9: Database (SQLite)
-  - [x] Task 10: FastAPI + 增量轮询
-  - [x] Task 11: Streamlit UI
+  - [x] Task 10: FastAPI + SSE
+  - [x] Task 11: React 前端（替代原 Streamlit）
   - [x] Task 12: 集成验证
+
+- **Phase 2: 完善 ✅ 完成**
+  - [x] 轮询 → SSE 实时推送
+  - [x] 三栏布局（历史 | 内容 | 工作流）
+  - [x] 白色主题 + Fira Code/Sans 字体
+  - [x] Token 调用量显示（后台 + 前端）
+  - [x] SSE 稳定性修复（event: error → task_error）
+  - [x] LLM 超时 + Agent 执行日志
 
 ## 已做出的技术决策
 
@@ -56,15 +64,16 @@ docs/superpowers/
 | 对话模型 | **agnes-2.0-flash** / deepseek-v4-flash | 256K 上下文，65.5K 输出 |
 | Agent 编排 | **LangGraph** | 状态图天然适配多角色路由 + `stream()` 流式执行 |
 | 流式执行 | **graph.stream(stream_mode="values")** | 每节点完成后即时 yield，逐角色推送事件 |
-| 前端 | **Streamlit** | Python only，增量轮询 + `st.rerun()` 避免 UI 冻结 |
-| 前端流式 | **增量轮询**（GET /task/{id}/events?after=N，0.5s） | SSE 会阻塞 Streamlit 单线程，轮询更稳定 |
+| 后端流式 | **SSE (asyncio.Queue + sse-starlette)** | 实时推送，替代 Phase 1 的增量轮询 |
+| 前端 | **React (Vite + TS + Tailwind CSS v4)** | 替代 Streamlit，支持 SSE 消费、三栏布局 |
+| 前端流式 | **EventSource API** | 原生 SSE 消费，自动重连 |
 | 零外部数据 | **纯 LLM 知识** | 避免反爬问题 |
 | 质量保证 | **Critic-Reviser 循环**（最多 2 轮） | 自动化审核 + 修改，评分 ≥7 通过 |
 
 ## 流式执行架构
 
 ```
-用户提交任务
+用户提交任务（React）
     │
     ▼
 FastAPI POST /task → 返回 task_id
@@ -72,18 +81,22 @@ FastAPI POST /task → 返回 task_id
     ▼
 后台线程: graph.stream(stream_mode="values")
     │
-    ├── Planner 完成 → 2 个事件写入共享 dict
-    ├── Worker 完成  → 2 个事件写入共享 dict
-    ├── Critic 完成  → 2 个事件写入共享 dict
-    └── 状态: done
+    ├── Planner 完成 → 2 个事件 push 到 asyncio.Queue
+    ├── Worker 完成  → 2 个事件 push 到 asyncio.Queue
+    ├── Critic 完成  → 2 个事件 push 到 asyncio.Queue
+    └── 状态: done → done 事件 → 写入 SQLite
     │
     ▼
-前端: GET /task/{id}/events?after=N (每 0.5s)
+前端: EventSource → GET /task/{id}/stream (SSE)
     │
-    └── 只返回新增事件 → st.rerun() → 逐角色渲染
+    └── agent_start / agent_done / heartbeat / done / task_error
+        → 右侧工作流实时更新 + 中间产出流式展示
 ```
 
-⚠️ 关键 bug 教训：`list(chunk.get("events", []))` 必须 copy，因为 LangGraph 复用同一个 list 引用，直接赋值 `all_events = current` 会导致 `current[len(all_events):]` 永远为空。
+⚠️ 关键 bug 教训：
+- `list(chunk.get("events", []))` 必须 copy，因为 LangGraph 复用同一个 list 引用
+- SSE `event: error` 会被浏览器当作传输错误关闭连接，改用 `event: task_error`
+- Vite 代理会缓冲 SSE 流，SSE 必须直连 `http://localhost:8000`
 
 ## Git 操作规范
 
@@ -102,16 +115,34 @@ FastAPI POST /task → 返回 task_id
 Mentex/
 ├── backend/
 │   ├── config.py              # 双 Provider 切换（LLM_PROVIDER=agnes/deepseek）
-│   ├── llm.py                 # chat() + chat_stream()
-│   ├── api.py                 # FastAPI (POST /task, GET /task/{id}/events?after=N)
+│   ├── llm.py                 # chat() 返回 (content, token_usage)
+│   ├── api.py                 # FastAPI (POST /task, GET /task/{id}/stream SSE, GET /history)
 │   ├── db.py                  # SQLite 历史记录
 │   └── agent/
-│       ├── state.py           # StudioState TypedDict
+│       ├── state.py           # StudioState TypedDict（含 total_tokens）
 │       ├── prompts.py         # 8 个角色的 System Prompt
-│       ├── nodes.py           # planner / worker / critic / reviser
+│       ├── nodes.py           # planner / worker / critic / reviser（含日志 + token）
 │       └── graph.py           # LangGraph StateGraph
-├── frontend/
-│   └── app.py                 # Streamlit UI（增量轮询 + st.rerun()）
+├── frontend/                  # [DEPRECATED] Streamlit 旧版
+│   └── app.py
+├── frontend-react/            # React 新版 ⭐
+│   ├── src/
+│   │   ├── types.ts           # 类型定义 + Agent 元数据
+│   │   ├── context/AppContext.tsx  # useReducer 全局状态
+│   │   ├── hooks/useTaskStream.ts  # SSE EventSource Hook
+│   │   └── components/        # 10 个组件
+│   │       ├── Sidebar.tsx         # 左侧：历史记录
+│   │       ├── MainContent.tsx     # 中间：内容 + 底部输入栏
+│   │       ├── WorkflowPanel.tsx   # 右侧：工作流可视化
+│   │       ├── AgentCard.tsx       # Agent 状态卡片（含 token）
+│   │       ├── PipelineVisualization.tsx  # Pipeline 流程图
+│   │       ├── WelcomeScreen.tsx   # 欢迎页 + 示例任务
+│   │       ├── StreamingOutput.tsx # 流式事件展示
+│   │       ├── FinalResult.tsx     # 最终产出 + 下载
+│   │       ├── HistoryList.tsx     # 历史任务列表
+│   │       └── TaskInput.tsx       # 任务输入组件（独立可复用）
+│   ├── vite.config.ts
+│   └── index.html
 ├── tests/
 │   ├── test_config.py         # Provider 切换测试 (3)
 │   ├── test_nodes.py          # 节点测试 (6)
@@ -134,15 +165,20 @@ Mentex/
   - Agnes: `AGENS_API_KEY` + `AGENS_BASE_URL` + `AGENS_MODEL=agnes-2.0-flash`
   - DeepSeek: `DEEPSEEK_API_KEY` + `DEEPSEEK_BASE_URL` + `DEEPSEEK_MODEL=deepseek-v4-flash`
 - 兼容 OpenAI SDK，无需改代码
+- OpenAI 客户端超时: 120s
 
 ## 启动命令
 
 ```bash
 # 后端
+cd /home/max-rayyy/ai-workspace/Mentex
+source /home/max-rayyy/ai-workspace/.venv/bin/activate
 python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000
 
-# 前端
-streamlit run frontend/app.py --server.port 8501 --server.headless true
+# 前端（新 React 版）
+cd /home/max-rayyy/ai-workspace/Mentex/frontend-react
+npm run dev
+# 浏览器打开 http://localhost:5173
 
 # 测试
 python -m pytest tests/ -v
