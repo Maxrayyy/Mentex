@@ -85,10 +85,17 @@ def planner_node(state: StudioState) -> dict:
     if "Critic" not in plan.get("pipeline", []):
         plan["pipeline"].append("Critic")
 
-    # 5️⃣ 发事件：告诉前端结果（含 token）
+    # 用图标表示 pipeline
+    ROLE_ICONS = {
+        "Planner": "🧠", "Researcher": "🔍", "Synthesizer": "🔗",
+        "Writer": "✍️", "Designer": "🎨", "Analyst": "📊",
+        "Critic": "👁️", "Reviser": "🔧",
+    }
+    pipeline_icons = " → ".join(
+        f"{ROLE_ICONS.get(r, '🔹')} {r}" for r in plan.get("pipeline", [])
+    )
     _emit(state, "agent_done", "planner",
-          f"计划制定完成：{plan.get('plan_summary', '')}，"
-          f"pipeline: {' → '.join(plan.get('pipeline', []))}",
+          f"计划制定完成：{plan.get('plan_summary', '')}\n{pipeline_icons}",
           tokens=tokens)
 
     # 6️⃣ 返回要更新的 state 字段

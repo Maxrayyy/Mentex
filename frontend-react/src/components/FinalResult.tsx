@@ -35,7 +35,7 @@ export default function FinalResult() {
 
   // 完成状态
   return (
-    <div className="px-8 py-8 space-y-6 max-w-3xl">
+    <div className="px-8 py-8 space-y-6 w-full">
       {/* 标题 */}
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-heading font-medium text-mentex-text">

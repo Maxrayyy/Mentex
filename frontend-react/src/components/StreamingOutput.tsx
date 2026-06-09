@@ -21,7 +21,11 @@ export default function StreamingOutput({ events }: Props) {
               className="flex items-start gap-3 py-2"
             >
               <span className="w-2 h-2 mt-1.5 rounded-full bg-mentex-accent flex-shrink-0" />
-              <p className="text-sm text-mentex-text/80">{evt.content}</p>
+              <div className="text-sm text-mentex-text/80">
+                {evt.content.split('\n').map((line, j) => (
+                  <p key={j}>{line}</p>
+                ))}
+              </div>
             </div>
           ))}
         </div>
