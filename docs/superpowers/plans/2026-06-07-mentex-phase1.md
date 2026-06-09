@@ -1842,3 +1842,26 @@ README 已在 Task 1 创建，验证内容与最终结构一致。
 3. **EventSource error handler 混淆**：`addEventListener('error')` 同时捕获传输错误和自定义 SSE error 事件。改用 `es.onerror` 只处理传输层错误。
 4. **asyncio.Queue 线程安全**：后台线程通过 `loop.call_soon_threadsafe(q.put_nowait)` 推送事件到主线程的 asyncio.Queue。
 5. **LangGraph State 追加字段**：新增 `total_tokens` 字段后需在所有返回 dict 的节点中传递，否则 LangGraph 不会自动保留。
+
+---
+
+## Phase 3 稳定性修复
+
+**完成日期**：2026-06-09
+**Git 提交**：`44b4bc3` fix: CORS 127.0.0.1白名单 + asyncio event loop跨线程修复
+
+### 修复清单
+
+| Task | 内容 | 状态 |
+|------|------|------|
+| 3.1 | CORS origin 补全（127.0.0.1 vs localhost） | ✅ 完成 |
+| 3.2 | asyncio.get_event_loop() 跨线程 RuntimeError | ✅ 完成 |
+| 3.3 | 前端 SSE Hook 重构（简化 ref、添加错误日志） | ✅ 完成 |
+
+### Phase 3 踩过的坑
+
+1. **CORS origin 127.0.0.1 ≠ localhost**：浏览器将 `127.0.0.1:5173` 和 `localhost:5173` 视为不同源。用户从 `127.0.0.1` 访问前端时，CORS 白名单中只有 `localhost` → SSE 被浏览器拦截。**解决**：同时添加两个地址到 `allow_origins`。
+
+2. **`asyncio.get_event_loop()` 跨线程抛 RuntimeError** ⭐ 关键 bug：后台线程 `_run_agent()` 中调用 `asyncio.get_event_loop()` 时，Python 3.10+ 非主线程不再自动返回主线程 event loop → 抛 `RuntimeError` → 被 `except RuntimeError: pass` 静默吞掉 → 所有 SSE 事件丢失，只剩心跳。**解决**：在 FastAPI `startup` 事件中用 `asyncio.get_running_loop()` 捕获主线程 loop 引用 `_main_loop`，`_push_event_safe()` 改用 `_main_loop.call_soon_threadsafe()`。
+
+3. **前端 EventSource 错误处理不足**：原始代码 `catch { /* ignore parse errors */ }` 静默丢弃所有 JSON 解析错误，导致排查困难。**解决**：添加 `console.error` 输出具体错误信息。

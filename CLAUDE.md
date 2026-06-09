@@ -97,6 +97,9 @@ FastAPI POST /task → 返回 task_id
 - `list(chunk.get("events", []))` 必须 copy，因为 LangGraph 复用同一个 list 引用
 - SSE `event: error` 会被浏览器当作传输错误关闭连接，改用 `event: task_error`
 - Vite 代理会缓冲 SSE 流，SSE 必须直连 `http://localhost:8000`
+- CORS 中 `127.0.0.1` ≠ `localhost`（不同源），两个地址都要加入白名单
+- Python 3.10+ 后台线程调用 `asyncio.get_event_loop()` 会抛 RuntimeError（不再自动返回主线程 loop）
+  → 解决：启动时用 `asyncio.get_running_loop()` 捕获 `_main_loop`，跨线程用 `_main_loop.call_soon_threadsafe()`
 
 ## Git 操作规范
 

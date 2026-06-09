@@ -122,32 +122,36 @@ Writer 产出 → Critic 审查
 
 ## 5. 数据流（实际实现）
 
-### 5.1 流式执行架构
+### 5.1 流式执行架构（SSE 实时推送）
 
 ```
-用户提交任务（Streamlit）
+用户提交任务（React）
     │
     ▼
 POST /task → 返回 task_id → 后台线程启动 graph.stream()
     │                              │
-    │                              ├── Planner 完成 → 2 个事件写入共享 dict
-    │                              ├── Worker 完成  → 2 个事件写入共享 dict
-    │                              └── Critic 完成  → 2 个事件写入共享 dict
+    │                              ├── Planner 完成 → 2 个事件 push 到 asyncio.Queue
+    │                              ├── Worker 完成  → 2 个事件 push 到 asyncio.Queue
+    │                              └── Critic 完成  → 2 个事件 push 到 asyncio.Queue
     │
     ▼
-前端: GET /task/{id}/events?after=N（每 0.5s，只取新增事件）
+前端: EventSource → GET /task/{id}/stream (SSE 直连 localhost:8000)
     │
-    └── 新事件渲染到 expander → st.rerun() → 再次轮询
+    └── agent_start / agent_done / heartbeat / done / task_error
+        → 右侧工作流实时更新 + 中间产出流式展示
 ```
 
-> **设计决策**：SSE 会阻塞 Streamlit 的单线程渲染循环。改用增量轮询后，每次 `st.rerun()` 只做一次 HTTP 请求，渲染完立即返回控制权给 Streamlit。
+> **Phase 1 (废弃)**: Streamlit + 增量轮询。SSE 会阻塞 Streamlit 单线程渲染，改用 React 后可原生消费 EventSource。
 
 ### 5.2 关键实现细节
 
 - **LangGraph 流式**：`graph.stream(stream_mode="values")` 每完成一个节点 yield 一次完整 state
 - **增量事件**：`list(chunk.get("events", []))` **必须 copy**（LangGraph 复用 list 引用，直接赋值会导致 delta 永远为空）
-- **增量返回**：`GET /task/{id}/events?after=N` 返回 `events[N:]` + `total` + `status`
+- **SSE 推送**：后台线程通过 `_main_loop.call_soon_threadsafe(q.put_nowait)` 线程安全推送
+  - ⚠️ Python 3.10+ 中 `asyncio.get_event_loop()` 在非主线程抛 RuntimeError
+  - → 启动时用 `asyncio.get_running_loop()` 捕获主线程 loop 保存为 `_main_loop`
 - **状态存储**：`_running_tasks[task_id]` 内存 dict，完成后写入 SQLite
+- **CORS**：`127.0.0.1` 和 `localhost` 被视为不同源，两个地址都需加入白名单
 
 ### 5.3 事件格式
 
@@ -165,8 +169,9 @@ POST /task → 返回 task_id → 后台线程启动 graph.stream()
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/task` | 提交任务，返回 `{"task_id": "xxx"}`，后台执行 |
-| GET | `/task/{id}/events?after=N` | 增量事件：`{"status", "events[N:]", "total", "final_output"}` |
+| POST | `/task` | 提交任务，返回 `{"task_id": "xxx"}`，后台线程执行 |
+| GET | `/task/{id}/stream` | SSE 实时事件流（EventSource 直连 `localhost:8000`） |
+| GET | `/task/{id}/events?after=N` | 增量轮询（保留兼容，Phase 1 遗留） |
 | GET | `/task/{id}` | 任务完整详情（含所有事件和产出） |
 | GET | `/history` | 历史任务列表 |
 
@@ -178,9 +183,9 @@ POST /task → 返回 task_id → 后台线程启动 graph.stream()
 |----|------|------|
 | Agent 编排 | LangGraph | `stream(stream_mode="values")` 逐节点流式执行 |
 | LLM | Agnes AI（默认）/ DeepSeek（备用） | `.env` 中 `LLM_PROVIDER` 一键切换 |
-| Web 框架 | FastAPI | 后台线程 + 内存共享 dict |
-| 前端 | Streamlit | 增量轮询 + `st.rerun()` |
-| 流式方案 | 增量轮询（非 SSE） | Streamlit 单线程模型下更稳定 |
+| Web 框架 | FastAPI | 后台线程 + asyncio.Queue + sse-starlette |
+| 前端 | React 19 (Vite + TypeScript + Tailwind CSS v4) | EventSource API 原生 SSE 消费 |
+| 流式方案 | SSE (Server-Sent Events) | 直连 `localhost:8000`，不经过 Vite 代理 |
 | 存储 | SQLite | 任务历史持久化 |
 | Python | 3.10+ | - |
 | 包管理 | pip + venv | 共享 workspace venv |
@@ -193,25 +198,36 @@ POST /task → 返回 task_id → 后台线程启动 graph.stream()
 Mentex/
 ├── backend/
 │   ├── config.py              # 双 Provider 切换（LLM_PROVIDER=agnes/deepseek）
-│   ├── llm.py                 # chat() + chat_stream()
-│   ├── api.py                 # FastAPI（后台线程 + 增量轮询端点）
+│   ├── llm.py                 # chat() 返回 (content, token_usage)
+│   ├── api.py                 # FastAPI（POST /task, SSE /task/{id}/stream, GET /history）
 │   ├── db.py                  # SQLite 任务历史
 │   └── agent/
-│       ├── state.py           # StudioState TypedDict
+│       ├── state.py           # StudioState TypedDict（含 total_tokens）
 │       ├── prompts.py         # 8 个角色的 System Prompt
-│       ├── nodes.py           # planner / worker / critic / reviser
+│       ├── nodes.py           # planner / worker / critic / reviser（含日志 + token）
 │       └── graph.py           # LangGraph StateGraph
-├── frontend/
-│   └── app.py                 # Streamlit UI（增量轮询 + st.rerun()）
-├── tests/
-│   ├── test_config.py         # Provider 切换测试 (3)
-│   ├── test_nodes.py          # 节点逻辑测试 (6)
-│   ├── test_graph.py          # 端到端流程测试 (2)
-│   ├── test_db.py             # 数据库测试 (3)
-│   └── test_api.py            # API 测试 (2)
+├── frontend/                  # [DEPRECATED] Streamlit 旧版
+│   └── app.py
+├── frontend-react/            # React 新版 ⭐
+│   └── src/
+│       ├── types.ts           # 类型定义 + Agent 元数据 + API 常量
+│       ├── context/AppContext.tsx  # useReducer 全局状态
+│       ├── hooks/useTaskStream.ts  # SSE EventSource Hook
+│       └── components/
+│           ├── Sidebar.tsx         # 左侧：历史记录
+│           ├── MainContent.tsx     # 中间：内容 + 底部输入栏
+│           ├── WorkflowPanel.tsx   # 右侧：工作流可视化
+│           ├── AgentCard.tsx       # Agent 状态卡片（含 token）
+│           ├── PipelineVisualization.tsx  # Pipeline 流程图
+│           ├── WelcomeScreen.tsx   # 欢迎页 + 示例任务
+│           ├── StreamingOutput.tsx # 流式事件展示
+│           ├── FinalResult.tsx     # 最终产出 + 下载
+│           ├── HistoryList.tsx     # 历史任务列表
+│           └── TaskInput.tsx       # 任务输入组件（独立可复用）
+├── tests/（5 个测试文件，16 个测试）
 ├── docs/superpowers/
 │   ├── specs/2026-06-07-mentex-design.md   # 本文件
-│   └── plans/2026-06-07-mentex-phase1.md   # 实现计划
+│   └── plans/2026-06-07-mentex-phase1.md   # 实现计划（含 Phase 1/2/3）
 ├── .env.example
 ├── .gitignore
 ├── requirements.txt
