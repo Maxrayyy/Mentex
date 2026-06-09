@@ -104,7 +104,7 @@ FastAPI POST /task → 返回 task_id
 ## Git 操作规范
 
 - 远程仓库: `https://github.com/Maxrayyy/Mentex.git`
-- `git push` 等待超过 **15 秒** → 停止等待，提示用户手动执行
+- ⚠️ **`git push` 超时 15 秒必须停止！** 用 `timeout 15 git push` 或在 Bash 工具中设 `timeout: 15000`。超时后不要重试，直接告诉用户手动执行。网络环境不稳定，反复重试浪费时间。
 
 ## 提交规范
 
